@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useState, useRef, useEffect } from "react";
+import { useCallback, useState, useRef, useEffect, useMemo } from "react";
 import { DownloadCsv } from "./DownloadCsv";
 import { OmUpdateModal } from "./OmUpdateModal";
+import { ReturnDetailsModal } from "./ReturnDetailsModal";
 import type { OemReturn } from "@/lib/types";
 
 const STATUS_OPTIONS = ["Open", "In Progress", "Closed"] as const;
@@ -32,7 +33,7 @@ interface ReturnsTableProps {
   onLimitChange: (limit: number) => void;
   onSortChange: (sortBy: string, sortOrder: "asc" | "desc") => void;
   onUpdate: (
-    ticketLink: string,
+    requestId: number,
     payload: { status?: string; om_update?: string; designated_om_agent?: string | null }
   ) => Promise<void>;
   loading?: boolean;
@@ -72,8 +73,17 @@ export function ReturnsTable({
 }: ReturnsTableProps) {
   const [limitInput, setLimitInput] = useState(String(limit));
   const [omUpdateRow, setOmUpdateRow] = useState<OemReturn | null>(null);
-  const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
-  const [agentUpdating, setAgentUpdating] = useState<string | null>(null);
+  const [detailsRow, setDetailsRow] = useState<OemReturn | null>(null);
+  const [statusUpdating, setStatusUpdating] = useState<number | null>(null);
+  const [agentUpdating, setAgentUpdating] = useState<number | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const cardHeaderRef = useRef<HTMLDivElement | null>(null);
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  const headerRowRef = useRef<HTMLTableRowElement | null>(null);
+  const [showFloatingHeader, setShowFloatingHeader] = useState(false);
+  const [floatingTableWidth, setFloatingTableWidth] = useState(0);
+  const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
+  const [tableClientWidth, setTableClientWidth] = useState(0);
   
   // Column width state - default widths for each column
   const defaultWidths: Record<string, number> = {
@@ -117,10 +127,10 @@ export function ReturnsTable({
   );
 
   const handleStatusChange = useCallback(
-    async (ticketLink: string, newStatus: string) => {
-      setStatusUpdating(ticketLink);
+    async (requestId: number, newStatus: string) => {
+      setStatusUpdating(requestId);
       try {
-        await onUpdate(ticketLink, { status: newStatus });
+        await onUpdate(requestId, { status: newStatus });
       } finally {
         setStatusUpdating(null);
       }
@@ -129,23 +139,33 @@ export function ReturnsTable({
   );
 
   const handleOmUpdateSave = useCallback(
-    async (ticketLink: string, omUpdate: string) => {
-      await onUpdate(ticketLink, { om_update: omUpdate });
+    async (requestId: number, omUpdate: string) => {
+      await onUpdate(requestId, { om_update: omUpdate });
       setOmUpdateRow(null);
     },
     [onUpdate]
   );
 
   const handleDesignatedAgentBlur = useCallback(
-    async (ticketLink: string, value: string) => {
-      setAgentUpdating(ticketLink);
+    async (requestId: number, value: string) => {
+      setAgentUpdating(requestId);
       try {
-        await onUpdate(ticketLink, {
+        await onUpdate(requestId, {
           designated_om_agent: value.trim() || null,
         });
       } finally {
         setAgentUpdating(null);
       }
+    },
+    [onUpdate]
+  );
+
+  const handleDetailsSave = useCallback(
+    async (
+      requestId: number,
+      payload: { status?: string; om_update?: string; designated_om_agent?: string | null }
+    ) => {
+      await onUpdate(requestId, payload);
     },
     [onUpdate]
   );
@@ -162,7 +182,7 @@ export function ReturnsTable({
       if (!resizingColumn) return;
       
       const diff = e.clientX - resizeStartX.current;
-      const newWidth = Math.max(50, resizeStartWidth.current + diff);
+      const newWidth = Math.max(24, resizeStartWidth.current + diff);
       setColumnWidths(prev => ({
         ...prev,
         [resizingColumn]: newWidth,
@@ -188,7 +208,48 @@ export function ReturnsTable({
     };
   }, [resizingColumn]);
 
-  if (loading) {
+  const syncFloatingHeader = useCallback(() => {
+    if (!cardRef.current) return;
+    const rect = cardRef.current.getBoundingClientRect();
+    const headerHeight = headerRowRef.current?.getBoundingClientRect().height ?? 0;
+    setShowFloatingHeader(rect.top <= 0 && rect.bottom > headerHeight);
+    const nextWidth = tableWrapRef.current?.clientWidth ?? rect.width;
+    setFloatingTableWidth(nextWidth);
+    setTableClientWidth(nextWidth);
+  }, []);
+
+  useEffect(() => {
+    syncFloatingHeader();
+    window.addEventListener("scroll", syncFloatingHeader, { passive: true });
+    window.addEventListener("resize", syncFloatingHeader);
+    return () => {
+      window.removeEventListener("scroll", syncFloatingHeader);
+      window.removeEventListener("resize", syncFloatingHeader);
+    };
+  }, [syncFloatingHeader]);
+
+  useEffect(() => {
+    syncFloatingHeader();
+  }, [columnWidths, syncFloatingHeader]);
+
+  const scaledColumnWidths = useMemo(() => {
+    if (!tableClientWidth) return columnWidths;
+    const totalWidth = COLS.reduce((sum, { key }) => sum + (columnWidths[key] ?? 0), 0);
+    if (totalWidth <= tableClientWidth) return columnWidths;
+    const scale = tableClientWidth / totalWidth;
+    const minWidth = 24;
+    const next: Record<string, number> = {};
+    for (const { key } of COLS) {
+      next[key] = Math.max(minWidth, Math.floor((columnWidths[key] ?? 0) * scale));
+    }
+    return next;
+  }, [columnWidths, tableClientWidth]);
+
+  const handleTableScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setHeaderScrollLeft(e.currentTarget.scrollLeft);
+  }, []);
+
+  if (loading && rows.length === 0) {
     return (
       <div className="rounded-xl border border-slate-700 bg-slate-800/80 p-6">
         <div className="h-8 w-48 animate-pulse rounded bg-slate-600" />
@@ -203,8 +264,11 @@ export function ReturnsTable({
 
   return (
     <>
-      <div className="rounded-xl border border-slate-700 bg-slate-800/80 shadow-lg">
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-700 p-4">
+      <div ref={cardRef} className="rounded-xl border border-slate-700 bg-slate-800/80 shadow-lg">
+        <div
+          ref={cardHeaderRef}
+          className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-700 p-4"
+        >
           <p className="text-sm text-slate-400">
             Showing <span className="font-medium text-slate-200">{from}</span>–
             <span className="font-medium text-slate-200">{to}</span> of{" "}
@@ -269,15 +333,66 @@ export function ReturnsTable({
           </div>
         </div>
 
-        <div className="table-wrap overflow-x-auto p-4">
-          <table className="w-full border-collapse text-left text-sm" style={{ tableLayout: "fixed" }}>
-            <thead>
-              <tr className="border-b border-slate-600">
+        <div
+          ref={tableWrapRef}
+          onScroll={handleTableScroll}
+          className="table-wrap max-h-[70vh] overflow-auto px-4 pb-4 pt-0"
+        >
+          {showFloatingHeader && (
+            <div className="sticky top-0 z-20 -mt-px border-b border-slate-700 bg-slate-800">
+              <div className="px-4">
+                <table
+                  className="border-collapse text-left text-[11px] sm:text-xs lg:text-sm"
+                  style={{
+                    tableLayout: "fixed",
+                    width: floatingTableWidth || "100%",
+                    transform: `translateX(-${headerScrollLeft}px)`,
+                  }}
+                >
+                  <thead>
+                    <tr className="border-b border-slate-600">
+                      {COLS.map(({ key, label }, index) => (
+                        <th
+                          key={`floating-${key}`}
+                          style={{ width: scaledColumnWidths[key], minWidth: 24 }}
+                          className="bg-slate-800 relative cursor-pointer whitespace-normal py-2.5 pr-3 font-medium text-slate-400 hover:text-cyan-400 sm:py-3 sm:pr-4"
+                          onClick={() => handleSort(key)}
+                        >
+                          <div className="flex items-center pr-1">
+                            <span>{label}</span>
+                            {sortBy === key && (
+                              <span className="ml-1">{sortOrder === "asc" ? "↑" : "↓"}</span>
+                            )}
+                          </div>
+                          {index < COLS.length - 1 && (
+                            <div
+                              className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize bg-slate-800 hover:bg-cyan-500/80 transition-colors z-10"
+                              onMouseDown={(e) => {
+                                e.stopPropagation();
+                                handleResizeStart(key, e);
+                              }}
+                              style={{ marginRight: "-3px" }}
+                            />
+                          )}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                </table>
+              </div>
+            </div>
+          )}
+          <table
+            className="w-full border-collapse text-left text-[11px] sm:text-xs lg:text-sm"
+            style={{ tableLayout: "fixed" }}
+          >
+            <thead className={showFloatingHeader ? "hidden" : ""}>
+              <tr ref={headerRowRef} className="border-b border-slate-600">
                 {COLS.map(({ key, label }, index) => (
                   <th
                     key={key}
-                    style={{ width: columnWidths[key], minWidth: 50 }}
-                    className="relative cursor-pointer whitespace-nowrap py-3 pr-4 font-medium text-slate-400 hover:text-cyan-400"
+                    style={{ width: scaledColumnWidths[key], minWidth: 24 }}
+                    className="sticky top-0 z-10 bg-slate-800 relative cursor-pointer whitespace-normal py-2.5 pr-3 font-medium text-slate-400 hover:text-cyan-400 sm:py-3 sm:pr-4"
                     onClick={() => handleSort(key)}
                   >
                     <div className="flex items-center pr-1">
@@ -287,13 +402,13 @@ export function ReturnsTable({
                       )}
                     </div>
                     {index < COLS.length - 1 && (
-                      <div
-                        className="absolute right-0 top-0 h-full w-1 cursor-col-resize bg-transparent hover:bg-cyan-500/50 transition-colors z-10"
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          handleResizeStart(key, e);
-                        }}
-                        style={{ width: "4px", marginRight: "-4px" }}
+                    <div
+                      className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize bg-slate-800 hover:bg-cyan-500/80 transition-colors z-10"
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        handleResizeStart(key, e);
+                      }}
+                        style={{ marginRight: "-3px" }}
                       />
                     )}
                   </th>
@@ -308,36 +423,57 @@ export function ReturnsTable({
                   </td>
                 </tr>
               ) : (
-                rows.map((row, i) => (
+                rows.map((row) => (
                   <tr
-                    key={row.ticket_link + String(i)}
-                    className="border-b border-slate-700/80 hover:bg-slate-700/40"
+                    key={row.request_id}
+                    onClick={() => setDetailsRow(row)}
+                    className="cursor-pointer border-b border-slate-700/80 hover:bg-slate-700/40"
                   >
-                    <td style={{ width: columnWidths.ticket_link }} className="truncate py-2 pr-4 text-slate-200">
-                      {formatCell(row.ticket_link)}
+                    <td style={{ width: scaledColumnWidths.ticket_link }} className="py-2 pr-3 sm:pr-4">
+                      {row.ticket_link?.trim() ? (
+                        <a
+                          href={row.ticket_link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center justify-center rounded border border-slate-600 px-2.5 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
+                        >
+                          View Ticket
+                        </a>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center justify-center rounded border border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-500"
+                        >
+                          View Ticket
+                        </button>
+                      )}
                     </td>
-                    <td style={{ width: columnWidths.order_number }} className="truncate py-2 pr-4 text-slate-200">
+                    <td style={{ width: scaledColumnWidths.order_number }} className="py-2 pr-3 text-slate-200 sm:pr-4 whitespace-normal break-words">
                       {formatCell(row.order_number)}
                     </td>
-                    <td style={{ width: columnWidths.sku }} className="truncate py-2 pr-4 text-slate-200">
+                    <td style={{ width: scaledColumnWidths.sku }} className="py-2 pr-3 text-slate-200 sm:pr-4 whitespace-normal break-words">
                       {formatCell(row.sku)}
                     </td>
-                    <td style={{ width: columnWidths.customer_name }} className="truncate py-2 pr-4 text-slate-200">
+                    <td style={{ width: scaledColumnWidths.customer_name }} className="py-2 pr-3 text-slate-200 sm:pr-4 whitespace-normal break-words">
                       {formatCell(row.customer_name)}
                     </td>
-                    <td style={{ width: columnWidths.priority }} className="truncate py-2 pr-4 text-slate-200">
+                    <td style={{ width: scaledColumnWidths.priority }} className="py-2 pr-3 text-slate-200 sm:pr-4 whitespace-normal break-words">
                       {formatCell(row.priority)}
                     </td>
-                    <td style={{ width: columnWidths.om_request }} className="py-2 pr-4 text-slate-200 break-words whitespace-normal">
+                    <td style={{ width: scaledColumnWidths.om_request }} className="py-2 pr-3 text-slate-200 break-words whitespace-normal sm:pr-4">
                       {formatCell(row.om_request)}
                     </td>
-                    <td style={{ width: columnWidths.status }} className="py-2 pr-4">
+                    <td style={{ width: scaledColumnWidths.status }} className="py-2 pr-3 sm:pr-4">
                       <select
                         value={row.status || ""}
+                        onClick={(e) => e.stopPropagation()}
                         onChange={(e) =>
-                          handleStatusChange(row.ticket_link, e.target.value)
+                          handleStatusChange(row.request_id, e.target.value)
                         }
-                        disabled={statusUpdating === row.ticket_link}
+                        disabled={statusUpdating === row.request_id}
                         className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-slate-200 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 disabled:opacity-50"
                       >
                         {STATUS_OPTIONS.map((s) => (
@@ -347,36 +483,37 @@ export function ReturnsTable({
                         ))}
                       </select>
                     </td>
-                    <td style={{ width: columnWidths.om_update }} className="py-2 pr-4">
-                      <span className="block truncate text-slate-200">
-                        {formatCell(row.om_update) === "—"
-                          ? "—"
-                          : formatCell(row.om_update).slice(0, 60) +
-                            (formatCell(row.om_update).length > 60 ? "…" : "")}
+                    <td style={{ width: scaledColumnWidths.om_update }} className="py-2 pr-3 sm:pr-4">
+                      <span className="block text-slate-200 whitespace-normal break-words">
+                        {formatCell(row.om_update)}
                       </span>
                       <button
                         type="button"
-                        onClick={() => setOmUpdateRow(row)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOmUpdateRow(row);
+                        }}
                         className="mt-0.5 text-xs text-cyan-400 hover:underline"
                       >
                         Edit
                       </button>
                     </td>
-                    <td style={{ width: columnWidths.last_follow_up }} className="py-2 pr-4 text-slate-400 text-xs">
+                    <td style={{ width: scaledColumnWidths.last_follow_up }} className="py-2 pr-3 text-slate-400 sm:pr-4">
                       {formatTimestamp(row.last_follow_up)}
                     </td>
-                    <td style={{ width: columnWidths.request_date }} className="truncate py-2 pr-4 text-slate-200">
-                      {formatCell(row.request_date)}
+                    <td style={{ width: scaledColumnWidths.request_date }} className="py-2 pr-3 text-slate-400 sm:pr-4 whitespace-normal break-words">
+                      {formatTimestamp(row.request_date)}
                     </td>
-                    <td style={{ width: columnWidths.designated_om_agent }} className="py-2 pr-4">
+                    <td style={{ width: scaledColumnWidths.designated_om_agent }} className="py-2 pr-3 sm:pr-4">
                       <input
                         type="text"
                         defaultValue={formatCell(row.designated_om_agent) === "—" ? "" : formatCell(row.designated_om_agent)}
                         placeholder="OM agent"
+                        onClick={(e) => e.stopPropagation()}
                         onBlur={(e) =>
-                          handleDesignatedAgentBlur(row.ticket_link, e.target.value)
+                          handleDesignatedAgentBlur(row.request_id, e.target.value)
                         }
-                        disabled={agentUpdating === row.ticket_link}
+                        disabled={agentUpdating === row.request_id}
                         className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 disabled:opacity-50"
                       />
                     </td>
@@ -390,10 +527,19 @@ export function ReturnsTable({
 
       {omUpdateRow && (
         <OmUpdateModal
+          requestId={omUpdateRow.request_id}
           ticketLink={omUpdateRow.ticket_link}
           currentValue={omUpdateRow.om_update}
           onSave={handleOmUpdateSave}
           onClose={() => setOmUpdateRow(null)}
+        />
+      )}
+      {detailsRow && (
+        <ReturnDetailsModal
+          row={detailsRow}
+          statusOptions={STATUS_OPTIONS}
+          onSave={handleDetailsSave}
+          onClose={() => setDetailsRow(null)}
         />
       )}
     </>

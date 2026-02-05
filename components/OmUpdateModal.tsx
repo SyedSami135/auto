@@ -3,13 +3,15 @@
 import { useCallback, useEffect, useState } from "react";
 
 interface OmUpdateModalProps {
+  requestId: number;
   ticketLink: string;
   currentValue: string | null;
-  onSave: (ticketLink: string, omUpdate: string) => Promise<void>;
+  onSave: (requestId: number, omUpdate: string) => Promise<void>;
   onClose: () => void;
 }
 
 export function OmUpdateModal({
+  requestId,
   ticketLink,
   currentValue,
   onSave,
@@ -21,12 +23,12 @@ export function OmUpdateModal({
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
-      await onSave(ticketLink, value);
+      await onSave(requestId, value);
       onClose();
     } finally {
       setSaving(false);
     }
-  }, [ticketLink, value, onSave, onClose]);
+  }, [requestId, value, onSave, onClose]);
 
   useEffect(() => {
     setValue(currentValue ?? "");

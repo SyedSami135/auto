@@ -15,12 +15,34 @@ body {
   @apply bg-slate-900 text-slate-100 antialiased;
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 #0f172a;
+}
+
+*::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  box-shadow: inset 0 0 0 1px #0b1220;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #475569;
+  border: 2px solid #0f172a;
+  box-shadow: inset 0 0 0 1px #64748b;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #5b6b82;
+}
+
 /* Table scroll */
 .table-wrap {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-}
-
-.table-wrap table {
-  min-width: 900px;
 }

@@ -1,4 +1,5 @@
 export interface OemReturn {
+  request_id: number;
   ticket_link: string;
   order_number: string;
   sku: string;

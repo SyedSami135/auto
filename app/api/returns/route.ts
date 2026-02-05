@@ -28,7 +28,9 @@ function parseQuery(req: NextRequest): ReturnsQueryParams {
 
 function mapRow(r: Record<string, unknown>): OemReturn {
   const fmt = (v: unknown) => (v == null ? null : String(v));
+  const requestId = r.request_id != null ? Number(r.request_id) : 0;
   return {
+    request_id: Number.isNaN(requestId) ? 0 : requestId,
     ticket_link: fmt(r.ticket_link) ?? "",
     order_number: fmt(r.order_number) ?? "",
     sku: fmt(r.sku) ?? "",
@@ -116,7 +118,7 @@ export async function GET(req: NextRequest) {
     GROUP BY status, priority
   `;
   const dataSql = `
-    SELECT ticket_link, order_number, sku, customer_name, priority, om_request, status, om_update, last_follow_up, request_date, designated_om_agent
+    SELECT request_id, ticket_link, order_number, sku, customer_name, priority, om_request, status, om_update, last_follow_up, request_date, designated_om_agent
     FROM ${table}
     ${whereClause}
     ORDER BY ${orderCol} ${orderDir} ${orderNulls}
@@ -158,7 +160,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-const ALLOWED_STATUS = ["Open", "In Progress", "Closed", "Inprogress"];
+const ALLOWED_STATUS = ["Open", "In Progress", "Closed"];
 
 export async function PATCH(req: NextRequest) {
   if (!process.env.DATABASE_URL) {
@@ -169,7 +171,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   let body: {
-    ticket_link?: string;
+    request_id?: number;
     status?: string;
     om_update?: string;
     designated_om_agent?: string | null;
@@ -180,10 +182,10 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const ticketLink = body.ticket_link;
-  if (!ticketLink || typeof ticketLink !== "string" || ticketLink.trim() === "") {
+  const requestId = body.request_id;
+  if (requestId == null || Number.isNaN(Number(requestId))) {
     return NextResponse.json(
-      { error: "ticket_link is required" },
+      { error: "request_id is required" },
       { status: 400 }
     );
   }
@@ -194,7 +196,7 @@ export async function PATCH(req: NextRequest) {
       : undefined;
   if (status != null && !ALLOWED_STATUS.includes(status)) {
     return NextResponse.json(
-      { error: "status must be one of: Open, In Progress, Closed, Inprogress" },
+      { error: "status must be one of: Open, In Progress, Closed" },
       { status: 400 }
     );
   }
@@ -241,13 +243,13 @@ export async function PATCH(req: NextRequest) {
     idx++;
   }
   updates.push(`last_follow_up = CURRENT_TIMESTAMP`);
-  values.push(ticketLink);
+  values.push(Number(requestId));
 
   const sql = `
     UPDATE ${table}
     SET ${updates.join(", ")}
-    WHERE ticket_link = $${idx}
-    RETURNING ticket_link, order_number, sku, customer_name, priority, om_request, status, om_update, last_follow_up, request_date, designated_om_agent
+    WHERE request_id = $${idx}
+    RETURNING request_id, ticket_link, order_number, sku, customer_name, priority, om_request, status, om_update, last_follow_up, request_date, designated_om_agent
   `;
 
   try {
@@ -255,7 +257,7 @@ export async function PATCH(req: NextRequest) {
     const row = res.rows[0] as Record<string, unknown> | undefined;
     if (!row) {
       return NextResponse.json(
-        { error: "No row found for this ticket_link" },
+        { error: "No row found for this request_id" },
         { status: 404 }
       );
     }

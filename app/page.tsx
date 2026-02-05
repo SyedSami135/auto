@@ -113,7 +113,7 @@ export default function DashboardPage() {
 
   const handleUpdate = useCallback(
     async (
-      ticketLink: string,
+      requestId: number,
       payload: {
         status?: string;
         om_update?: string;
@@ -123,7 +123,7 @@ export default function DashboardPage() {
       const res = await fetch("/api/returns", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticket_link: ticketLink, ...payload }),
+        body: JSON.stringify({ request_id: requestId, ...payload }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
